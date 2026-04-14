@@ -1,0 +1,227 @@
+# Frontend Integration Guide
+# WHERE each hook/API call plugs into your existing React screens
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. App.tsx  (or main.tsx) — Wrap entire app with AuthProvider
+# ─────────────────────────────────────────────────────────────────────────────
+
+# BEFORE (your current App.tsx):
+  return <RouterProvider router={router} />;
+
+# AFTER:
+  import { AuthProvider } from "@/hooks/useAuth";
+
+  return (
+    <AuthProvider>
+      <RouterProvider router={router} />
+    </AuthProvider>
+  );
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. SplashScreen.tsx — Auto-redirect based on login state
+# ─────────────────────────────────────────────────────────────────────────────
+
+  import { useAuth } from "@/hooks/useAuth";
+  import { useNavigate } from "react-router";
+
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!loading) {
+      // After the splash animation finishes:
+      if (user) {
+        navigate("/dashboard");          // already logged in
+      } else {
+        navigate("/onboarding");         // first time or logged out
+      }
+    }
+  }, [user, loading]);
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. OnboardingFlow.tsx — Save to backend on final step
+# ─────────────────────────────────────────────────────────────────────────────
+
+  import { useAuth } from "@/hooks/useAuth";
+  import { api } from "@/lib/api";
+  import { useNavigate } from "react-router";
+
+  const { register } = useAuth();
+  const navigate = useNavigate();
+
+  // Step 1 of onboarding: user enters email/password → register them
+  const handleCreateAccount = async () => {
+    await register(email, password, name);
+    // continue to sleep goal step
+  };
+
+  // Final step: save all collected onboarding answers
+  const handleFinishOnboarding = async () => {
+    await api.users.saveOnboarding({
+      sleep_goal_hours: sleepGoal,
+      bedtime_target: bedtime,        // e.g. "23:00"
+      wake_time_target: wakeTime,     // e.g. "07:00"
+      stress_level: stressLevel,      // "low" | "moderate" | "high"
+      onboarding_data: {              // save everything for personalization
+        goals, struggles, energyPattern
+      }
+    });
+    navigate("/dashboard");
+  };
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Dashboard.tsx — Load today's schedule + show current task
+# ─────────────────────────────────────────────────────────────────────────────
+
+  import { useSchedule } from "@/hooks/useSchedule";
+  import { useAuth } from "@/hooks/useAuth";
+  import { api } from "@/lib/api";
+
+  const { user } = useAuth();
+  const { schedule, loadForDate } = useSchedule();
+  const today = new Date().toISOString().split("T")[0]; // "YYYY-MM-DD"
+
+  useEffect(() => {
+    loadForDate(today);
+  }, [today]);
+
+  // Map schedule.blocks to your existing timeline UI:
+  // block.start_time, block.end_time, block.title, block.color, block.is_locked
+  // block.is_auto_adjusted → show "Auto-adjusted" badge
+  // block.block_type === "sleep" → show 🔒 locked
+
+  // Current task: find block where current time falls between start_time and end_time
+  const now = new Date();
+  const currentBlock = schedule?.blocks.find(b => {
+    const [sh, sm] = b.start_time.split(":").map(Number);
+    const [eh, em] = b.end_time.split(":").map(Number);
+    const blockStart = sh * 60 + sm;
+    const blockEnd   = eh * 60 + em;
+    const nowMins    = now.getHours() * 60 + now.getMinutes();
+    return nowMins >= blockStart && nowMins < blockEnd;
+  });
+
+  // Sleep protection: check if bedtime block is intact
+  const sleepBlock = schedule?.blocks.find(b => b.block_type === "sleep");
+  const sleepSecured = !!sleepBlock?.is_locked;
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. PlanMyDay.tsx — Task input + AI generation + speech
+# ─────────────────────────────────────────────────────────────────────────────
+
+  import { useSchedule } from "@/hooks/useSchedule";
+  import { useSpeechInput } from "@/hooks/useSpeechInput";
+  import { api } from "@/lib/api";
+
+  const { generate, schedule, loading, error } = useSchedule();
+  const { state, transcript, parsedTasks, startRecording, stopRecording } = useSpeechInput();
+  const today = new Date().toISOString().split("T")[0];
+
+  // === Speech-to-text mic button ===
+  const handleMicPress   = () => startRecording();
+  const handleMicRelease = () => stopRecording();
+
+  // When speech is done, transcript auto-populates into the task text area:
+  // useEffect(() => {
+  //   if (state === "done") setTaskInput(transcript);
+  // }, [state, transcript]);
+
+  // Also: parsedTasks contains pre-parsed task cards to show for confirmation
+
+  // === "Generate My Schedule" button ===
+  const handleGenerate = async () => {
+    const result = await generate({
+      date: today,
+      freeText: taskInput,    // typed text OR speech transcript
+    });
+    if (result) {
+      // Show the generated schedule — result.blocks, result.ai_notes, result.confidence
+      // result.ai_notes shows why the AI made certain choices
+      setStep("generated");
+    }
+  };
+
+  // === Reality check: does everything fit before sleep? ===
+  // This is already computed by the AI — check result.ai_notes for "couldn't fit" warnings
+  // Or check if any block has block_type === "overflow"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. FocusMode.tsx — Start/end sessions, earn XP
+# ─────────────────────────────────────────────────────────────────────────────
+
+  import { useFocusTimer } from "@/hooks/useFocusTimer";
+
+  const { secondsLeft, isRunning, isComplete, xpEarned, progress, start, pause, resume, stop } = useFocusTimer();
+
+  // When user clicks "Start Focus Mode" from Dashboard or Plan screen:
+  // Pass the current task title + duration
+  const handleStart = () => start(currentTask.title, 25, currentTask.id);
+
+  // Circular progress ring: use `progress` (0 to 1)
+  // Timer display: format secondsLeft as MM:SS
+  const mm = String(Math.floor(secondsLeft / 60)).padStart(2, "0");
+  const ss = String(secondsLeft % 60).padStart(2, "0");
+
+  // On complete: show xpEarned in the "🎉 Session complete" card
+  // Growing plant: 🌱(0-25%) → 🌿(25-50%) → 🍀(50-75%) → 🌳(75-100%) based on progress
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. ProgressScreen.tsx — Fetch and display stats + charts
+# ─────────────────────────────────────────────────────────────────────────────
+
+  import { api } from "@/lib/api";
+
+  const [stats, setStats] = useState(null);
+
+  useEffect(() => {
+    api.progress.stats().then(setStats);
+  }, []);
+
+  // Map to your existing charts:
+  // stats.sleep_logs → sleepData array for recharts (date, sleep_hours)
+  // stats.avg_adherence → schedule adherence chart
+  // stats.streak_days → "12 Days 🔥" streak banner
+  // stats.total_xp → XP display
+  // stats.total_focus_sessions → sessions count
+
+  // Morning sleep log (show a modal when user opens app in the morning):
+  const logLastNight = async () => {
+    await api.progress.logSleep({
+      date: yesterday,
+      bedtime_actual: "23:15",
+      wake_time_actual: "07:05",
+      sleep_hours: 7.8,
+      quality_score: 8,
+      schedule_adherence: 0.85
+    });
+  };
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. SettingsScreen.tsx — Save updated sleep settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+  import { api } from "@/lib/api";
+  import { useAuth } from "@/hooks/useAuth";
+
+  const { user } = useAuth();
+
+  const handleSaveSettings = async () => {
+    await api.users.updateProfile({
+      sleep_goal_hours: newSleepGoal,
+      bedtime_target: newBedtime,
+      wake_time_target: newWakeTime,
+      stress_level: newStressLevel,
+    });
+    // Show "Saved ✅" toast
+  };
+
+  // Logout button:
+  const { logout } = useAuth();
+  // <button onClick={logout}>Log out</button>
