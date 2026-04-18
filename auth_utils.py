@@ -7,28 +7,20 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from database import get_db
 import models
+import os
 
-# ─── Config ──────────────────────────────────────────────────────────────────
-# In production, load these from environment variables!
-SECRET_KEY = "your-secret-key-change-this-in-production"
+SECRET_KEY = os.environ.get("SECRET_KEY", "sleepwell-secret-2024")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
-
-# ─── Password helpers ────────────────────────────────────────────────────────
-
 def hash_password(password: str) -> str:
-    # bcrypt has a 72 byte limit
     return pwd_context.hash(password[:72])
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain[:72], hashed)
-
-
-# ─── JWT helpers ─────────────────────────────────────────────────────────────
 
 def create_access_token(user_id: int) -> str:
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -41,9 +33,6 @@ def decode_token(token: str) -> Optional[int]:
         return int(payload.get("sub"))
     except JWTError:
         return None
-
-
-# ─── Dependency: get current user ────────────────────────────────────────────
 
 def get_current_user(
     token: str = Depends(oauth2_scheme),
